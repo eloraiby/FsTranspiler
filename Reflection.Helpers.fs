@@ -24,20 +24,6 @@ open System.Runtime.InteropServices
 open Microsoft.FSharp.Reflection
 open Microsoft.FSharp.Quotations
 
-let private cleanupName (s: string) =
-    if String.length s <> 0
-    then
-        // replace @ with _
-        let s = s.Replace("@", "_")
-        // replace . with __
-        let s = s.Replace(".", "__")
-        // if it ends with `N cut it
-        let trimPosition = s.IndexOf '`'
-        if trimPosition <> -1
-        then s.[0..trimPosition - 1]
-        else s
-    else s
-
 type FieldAccess =
     | Public
     | Protected
@@ -50,35 +36,6 @@ type TypeDeclAccess =
     | Global
 
 type Type(orig: System.Type) =
-    let rec getFullName orig =
-        let mutable t = orig
-        let mutable s = getName t
-        while t.IsNested do
-            s <- (getName t.DeclaringType) + "::" + s
-            t <- t.DeclaringType
-        s
-
-    and getName (orig : System.Type) =
-        if orig.IsArray
-        then sprintf "Array<%s>" (getFullName (orig.GetElementType()))
-        elif orig.IsGenericType
-        then
-            let gps =
-                orig.GetGenericArguments()
-                |> Array.fold
-                    (fun state t ->
-                        if state = ""
-                        then sprintf "%s" (getFullName t)
-                        else sprintf "%s, %s" state ((Type t).FullName)) ""
-            sprintf "%s<%s>" (getFullName (orig.GetGenericTypeDefinition())) gps
-        else sprintf "%s" (cleanupName orig.Name)
-
-    let name    = getName orig
-    let fullName = getFullName orig
-
-
-    member x.Name           = name
-    member x.FullName       = fullName
     member x.DeclaringType  = Type(orig.DeclaringType)
     member x.GetMethods()   = orig.GetMethods() |> Array.map (fun mi -> MethodInfo mi)
     member x.GetEnumNames() = orig.GetEnumNames()
@@ -98,25 +55,20 @@ type Type(orig: System.Type) =
     member internal x.Orig  = orig
 
 and MethodInfo(orig: System.Reflection.MethodInfo) =
-    let name = cleanupName orig.Name
-    
-    member x.Name   = name
     member x.Reflection = Quotations.Expr.TryGetReflectedDefinition (orig :> MethodBase)
     member x.GetParameters()    = orig.GetParameters() |> Array.map(fun pi -> ParameterInfo pi)
     member x.ReturnType = Type orig.ReturnType
+    member x.Orig   = orig
 
 and ParameterInfo(orig: System.Reflection.ParameterInfo) =
-    let name = cleanupName orig.Name
-    
-    member pi.Name = name
     member pi.ParameterType = Type orig.ParameterType
+    member pi.Orig = orig
 
 and FieldInfo(orig: System.Reflection.FieldInfo) =
     let isPublic  = orig.IsPublic || orig.Attributes.HasFlag FieldAttributes.Public
     let isPrivate = orig.Attributes.HasFlag FieldAttributes.Private
     let isProtected   = not isPrivate && not isPublic && ((orig.Attributes.HasFlag FieldAttributes.Family) || (orig.Attributes.HasFlag FieldAttributes.FamANDAssem) || (orig.Attributes.HasFlag FieldAttributes.FamORAssem))
 
-    member fi.Name      = cleanupName orig.Name
     member fi.FieldType = Type orig.FieldType
     member fi.Access    =
         if isPublic then
@@ -126,9 +78,10 @@ and FieldInfo(orig: System.Reflection.FieldInfo) =
         elif isPrivate then
             FieldAccess.Private
         else failwith "unsupported field accesss mode"
+    member fi.Orig = orig
 
 and MemberInfo(orig: System.Reflection.MemberInfo) =
-    member mi.Name = cleanupName mi.Name
+    member mi.Orig = orig
 
 type Enum
 with
