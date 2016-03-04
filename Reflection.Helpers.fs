@@ -1,6 +1,6 @@
 ﻿//
 // F# Transpiler
-// Copyright (C) 2015  Wael El Oraiby
+// Copyright (C) 2015-2016  Wael El Oraiby
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -24,23 +24,78 @@ open System.Runtime.InteropServices
 open Microsoft.FSharp.Reflection
 open Microsoft.FSharp.Quotations
 
-type FieldAccess =
-    | Public
-    | Protected
-    | Private
+type RT =
+    | Record    of PropertyInfo  []
+    | Union     of UnionCaseInfo []
 
-type TypeDeclAccess =
-    | Public
-    | Protected
-    | Private
-    | Global
+type ReflectedType(orig: Type) =
 
-type Type(orig: System.Type) =
-    member x.DeclaringType  = Type(orig.DeclaringType)
-    member x.GetMethods()   = orig.GetMethods() |> Array.map (fun mi -> MethodInfo mi)
-    member x.GetEnumNames() = orig.GetEnumNames()
-    member x.GetFields flags    = orig.GetFields flags |> Array.map (fun f -> FieldInfo f)
+    let cleanupName (n: string) =
+        match n.IndexOfAny [| '@'; '`' |] with
+        | x when x < 0  -> n
+        | x             -> n.Substring(0, x)
 
+    let tyName = orig.Name |> cleanupName
+
+    let isPublic (m: MethodInfo) = m.IsPublic
+    let isPrivate (m: MethodInfo) = m.IsPrivate
+    let isProtected (m: MethodInfo) = m.IsFamily
+
+    let getMethods (f: MethodInfo -> bool) =
+        orig.GetMethods()
+        |> Seq.filter(fun mi ->
+            match mi with
+            | Microsoft.FSharp.Quotations.DerivedPatterns.MethodWithReflectedDefinition d -> f mi
+            | _ -> false)
+        |> Seq.toArray
+        |> Array.map(fun mi ->
+            match mi with
+            | Microsoft.FSharp.Quotations.DerivedPatterns.MethodWithReflectedDefinition d -> (mi, d)
+            | _ -> failwith "impossible")
+    
+    let pubMethods  = getMethods isPublic
+    let privMethods = getMethods isPrivate
+    let protMethods = getMethods isProtected
+
+    let isPublic (p: PropertyInfo) = p.GetSetMethod(true).IsPublic
+    let isPrivate (p: PropertyInfo) = p.GetSetMethod(true).IsPrivate
+    let isProtected (p: PropertyInfo) = p.GetSetMethod(true).IsFamily
+
+    let getProperties (f: PropertyInfo -> bool) =
+        orig.GetProperties()
+        |> Seq.filter(fun mi ->
+            match mi with
+            | Microsoft.FSharp.Quotations.DerivedPatterns.PropertyGetterWithReflectedDefinition d -> f mi
+            | _ -> false)
+        |> Seq.toArray
+        |> Array.map(fun mi ->
+            match mi with
+            | Microsoft.FSharp.Quotations.DerivedPatterns.PropertyGetterWithReflectedDefinition d -> (mi, d)
+            | _ -> failwith "impossible")
+    
+    let pubProps  = getProperties isPublic
+    let privProps = getProperties isPrivate
+    let protProps = getProperties isProtected
+
+    let rt  =
+        if FSharpType.IsRecord orig
+        then Record (FSharpType.GetRecordFields orig)
+        elif FSharpType.IsUnion orig
+        then Union (FSharpType.GetUnionCases orig)
+        else failwith "not supported"
+
+    member x.Name   = tyName
+
+    member x.PublicMethods      = pubMethods
+    member x.ProtectedMethods   = protMethods
+    member x.PrivateMethods     = privMethods
+
+    member x.PublicProperties       = pubProps
+    member x.ProtectedProperties    = protProps
+    member x.PrivateProperties      = privProps
+
+
+(*
     member x.DeclAccess     =
         if not (FSharpType.IsModule orig)
         then TypeDeclAccess.Global
@@ -51,20 +106,20 @@ type Type(orig: System.Type) =
         elif orig.IsNestedFamily
         then TypeDeclAccess.Protected
         else failwith "unsupported type declaration access"
-
+ *)
     member internal x.Orig  = orig
 
-and MethodInfo(orig: System.Reflection.MethodInfo) =
+type MethodInfo(orig: System.Reflection.MethodInfo) =
     member x.Reflection = Quotations.Expr.TryGetReflectedDefinition (orig :> MethodBase)
     member x.GetParameters()    = orig.GetParameters() |> Array.map(fun pi -> ParameterInfo pi)
     member x.ReturnType = Type orig.ReturnType
     member x.Orig   = orig
 
-and ParameterInfo(orig: System.Reflection.ParameterInfo) =
+type ParameterInfo(orig: System.Reflection.ParameterInfo) =
     member pi.ParameterType = Type orig.ParameterType
     member pi.Orig = orig
 
-and FieldInfo(orig: System.Reflection.FieldInfo) =
+type FieldInfo(orig: System.Reflection.FieldInfo) =
     let isPublic  = orig.IsPublic || orig.Attributes.HasFlag FieldAttributes.Public
     let isPrivate = orig.Attributes.HasFlag FieldAttributes.Private
     let isProtected   = not isPrivate && not isPublic && ((orig.Attributes.HasFlag FieldAttributes.Family) || (orig.Attributes.HasFlag FieldAttributes.FamANDAssem) || (orig.Attributes.HasFlag FieldAttributes.FamORAssem))
@@ -80,7 +135,7 @@ and FieldInfo(orig: System.Reflection.FieldInfo) =
         else failwith "unsupported field accesss mode"
     member fi.Orig = orig
 
-and MemberInfo(orig: System.Reflection.MemberInfo) =
+type MemberInfo(orig: System.Reflection.MemberInfo) =
     member mi.Orig = orig
 
 type Enum
